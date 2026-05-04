@@ -2,11 +2,11 @@
 //
 // The issue body produced by `.github/ISSUE_TEMPLATE/wiki-update.yml` looks like:
 //
-//   ### 这次更新讲了什么？
+//   ### What's changing in this update?
 //
 //   <description text, possibly with markdown image references>
 //
-//   ### 影响 wiki 哪些区域？
+//   ### Which wiki areas does this affect?
 //
 //   opportunity-tracker, talent-wall
 //
@@ -14,8 +14,8 @@
 // the URLs separately collected for download), and the list of areas.
 
 const SECTION_HEADERS = {
-  description: '这次更新讲了什么？',
-  areas: '影响 wiki 哪些区域？',
+  description: "What's changing in this update?",
+  areas: 'Which wiki areas does this affect?',
 };
 
 // Pull a labelled section out of the issue body. Returns trimmed text or null.
