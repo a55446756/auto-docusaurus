@@ -6,16 +6,22 @@
 //   2. Validate (size & screenshot caps — see SAFETY section in README)
 //   3. Parse issue body → description, areas, image URLs
 //   4. Download screenshots (auth'd against user-attachments)
-//   5. Build wiki context (tree + full text of affected pages + product context)
-//   6. Call Claude with vision + tool_use → structured changes
-//   7. Apply changes: write markdown, save images to static/img/
-//   8. Branch + commit (one per group) + push
-//   9. Open PR, comment on issue
+//   5. PRE-SAVE every screenshot to a deterministic path under
+//      static/img/screenshots/issue-{n}/ so the file is on disk regardless of
+//      what the model returns. The model is told these paths and must
+//      reference them as-is in any markdown.
+//   6. Build wiki context (tree + full text of affected pages + product context)
+//   7. Call Claude with vision + tool_use → structured changes
+//   8. Apply changes: write markdown (with orphan image refs stripped),
+//      images already on disk from step 5
+//   9. Branch + commit (one per group) + push
+//  10. Open PR, comment on issue
 //
 // Any uncaught error gets reported back to the issue as a comment so the PM
 // always sees something happen (success or a clear failure note).
 
 import process from 'node:process';
+import { pathToFileURL } from 'node:url';
 import { Octokit } from '@octokit/rest';
 import { parseIssueBody } from './issue-parser.mjs';
 import {
@@ -74,6 +80,37 @@ async function downloadScreenshot(url, githubToken) {
   return { buffer, mediaType, base64: buffer.toString('base64') };
 }
 
+function extFromMediaType(mt) {
+  switch (mt) {
+    case 'image/jpeg': return 'jpg';
+    case 'image/gif': return 'gif';
+    case 'image/webp': return 'webp';
+    case 'image/png':
+    default: return 'png';
+  }
+}
+
+// Markdown image regex. Matches both `![alt](url)` and the rare `![alt](url "title")`.
+const MD_IMAGE_RE = /!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+
+// Strip image references in `content` whose URL looks like a local Docusaurus
+// path (`/img/...`) but isn't on the allowlist. External URLs (http*) are left
+// alone in case the model legitimately references something off-site.
+//
+// Returns { content, stripped } where `stripped` lists the bad URLs that were
+// removed (for logging into the PR comment).
+function stripOrphanImageRefs(content, allowedUrls) {
+  const stripped = [];
+  const cleaned = content.replace(MD_IMAGE_RE, (full, alt, url) => {
+    if (!url.startsWith('/')) return full; // external — keep
+    if (allowedUrls.has(url)) return full; // valid — keep
+    stripped.push(url);
+    return ''; // strip
+  });
+  // Collapse 3+ blank lines that may result from stripping image lines.
+  return { content: cleaned.replace(/\n{3,}/g, '\n\n'), stripped };
+}
+
 async function postIssueComment(octokit, { owner, repo, issueNumber, body }) {
   await octokit.issues.createComment({ owner, repo, issue_number: issueNumber, body });
 }
@@ -130,7 +167,19 @@ async function main() {
     return;
   }
 
-  // ---------- Download screenshots ----------
+  // ---------- Set up branch FIRST so screenshot writes happen on the AI branch ----------
+  const repoRoot = process.cwd();
+  const branchName = `wiki-update/issue-${issueNumber}`;
+  await createBranch(branchName, baseBranch);
+  log(`On branch ${branchName}`);
+
+  // ---------- Download + pre-save screenshots ----------
+  // Saving to disk BEFORE the Claude call decouples "image lands on disk" from
+  // "AI decided to reference this image." The previous design left images in
+  // memory and only saved them if the model included an image_placements
+  // entry — a single missed entry would leave a dangling /img/ ref in the
+  // markdown and break the Docusaurus build. Now: every uploaded image is
+  // saved at a known path, and the model is told what those paths are.
   const images = [];
   const downloadFailures = [];
   for (let i = 0; i < imageUrls.length; i++) {
@@ -145,8 +194,21 @@ async function main() {
     }
   }
 
+  const screenshotsDir = `static/img/screenshots/issue-${issueNumber}`;
+  for (const img of images) {
+    const ext = extFromMediaType(img.mediaType);
+    const repoPath = `${screenshotsDir}/screenshot-${img.index}.${ext}`;
+    const urlPath = `/${repoPath.replace(/^static\//, '')}`;
+    await writeBinaryTracked(repoRoot, repoPath, img.buffer);
+    img.repoPath = repoPath;
+    img.urlPath = urlPath;
+  }
+  if (images.length > 0) {
+    log(`Pre-saved ${images.length} screenshot(s) to ${screenshotsDir}/`);
+  }
+  const allowedImageUrls = new Set(images.map((i) => i.urlPath));
+
   // ---------- Build context ----------
-  const repoRoot = process.cwd();
   const productContext = await readProductContext(repoRoot);
   const { tree, fullPages } = await buildWikiContext(areas, repoRoot);
   const contextText = formatContextForPrompt({ tree, fullPages, productContext });
@@ -182,13 +244,9 @@ async function main() {
   }
 
   // ---------- Apply changes ----------
-  const branchName = `wiki-update/issue-${issueNumber}`;
-  await createBranch(branchName, baseBranch);
-  log(`On branch ${branchName}`);
-
   const createdPaths = [];
   const updatedPaths = [];
-  const imagePaths = [];
+  const allStripped = [];
 
   for (const change of result.changes) {
     if (!change.file_path || !change.content) {
@@ -196,36 +254,30 @@ async function main() {
       continue;
     }
 
-    // Sandbox writes to docs/ and static/img/ only — refuse anything else.
-    if (!/^(docs\/|static\/img\/)/.test(change.file_path)) {
-      warn(`Refusing to write outside docs/ or static/img/: ${change.file_path}`);
+    // Sandbox writes to docs/ only — refuse anything else (screenshots are
+    // pre-saved by us, not by the model).
+    if (!/^docs\//.test(change.file_path)) {
+      warn(`Refusing to write outside docs/: ${change.file_path}`);
       continue;
     }
 
-    await writeFileTracked(repoRoot, change.file_path, change.content);
+    const { content, stripped } = stripOrphanImageRefs(change.content, allowedImageUrls);
+    if (stripped.length > 0) {
+      warn(`Stripped ${stripped.length} broken image ref(s) from ${change.file_path}: ${stripped.join(', ')}`);
+      allStripped.push({ file: change.file_path, urls: stripped });
+    }
+
+    await writeFileTracked(repoRoot, change.file_path, content);
     if (change.action === 'create') createdPaths.push(change.file_path);
     else updatedPaths.push(change.file_path);
-
-    for (const placement of change.image_placements || []) {
-      const img = images[placement.source_index];
-      if (!img) {
-        warn(`Image placement references missing source_index=${placement.source_index}`);
-        continue;
-      }
-      if (!placement.save_to?.startsWith('static/img/')) {
-        warn(`Refusing to save image outside static/img/: ${placement.save_to}`);
-        continue;
-      }
-      await writeBinaryTracked(repoRoot, placement.save_to, img.buffer);
-      imagePaths.push(placement.save_to);
-    }
   }
 
   // ---------- Commits ----------
   const refLine = `Refs #${issueNumber}`;
+  const imagePaths = images.map((i) => i.repoPath);
   const newSha = await commitFiles(createdPaths, `docs: add new wiki pages\n\n${refLine}`);
   const updSha = await commitFiles(updatedPaths, `docs: update wiki pages\n\n${refLine}`);
-  const imgSha = await commitFiles(imagePaths, `docs: add screenshots\n\n${refLine}`);
+  const imgSha = await commitFiles(imagePaths, `docs: add screenshots from issue #${issueNumber}\n\n${refLine}`);
 
   if (!newSha && !updSha && !imgSha) {
     const body = `🤔 AI proposed changes but none were committable (all paths were rejected by the sandbox or duplicates of existing content). Check the workflow logs.`;
@@ -253,6 +305,10 @@ async function main() {
     ? `\n\n> ⚠️ ${downloadFailures.length} screenshot(s) could not be downloaded and were skipped.`
     : '';
 
+  const strippedNote = allStripped.length > 0
+    ? `\n\n> ⚠️ The AI referenced image paths that were not in the uploaded screenshots — those refs were stripped to keep the build green. Affected files: ${allStripped.map((s) => `\`${s.file}\``).join(', ')}.`
+    : '';
+
   const prBody = [
     `## Summary`,
     result.summary || '(no summary)',
@@ -264,6 +320,7 @@ async function main() {
     '',
     `Please review the rendered output in the **Vercel preview** linked below before merging.`,
     failureNote,
+    strippedNote,
     '',
     `Closes #${issueNumber}`,
   ].join('\n');
@@ -287,31 +344,40 @@ async function main() {
     '',
     `Check the Vercel preview on the PR to see how the wiki will render. Merge if it looks good. If not, edit this issue (or remove and re-add the \`wiki-update\` label) and the AI will re-run.`,
     failureNote,
+    strippedNote,
   ].join('\n');
 
   await postIssueComment(octokit, { owner, repo, issueNumber, body: commentBody });
   log('Done.');
 }
 
-main().catch(async (err) => {
-  console.error(err);
-  // Best-effort: post a failure comment if we have enough env to do so.
-  try {
-    const token = process.env.GITHUB_TOKEN;
-    const owner = process.env.REPO_OWNER;
-    const repo = process.env.REPO_NAME;
-    const issueNumber = Number(process.env.ISSUE_NUMBER);
-    if (token && owner && repo && issueNumber) {
-      const octokit = new Octokit({ auth: token });
-      await octokit.issues.createComment({
-        owner,
-        repo,
-        issue_number: issueNumber,
-        body: `❌ Wiki AI update failed.\n\n**Error:** \`${(err.message || String(err)).slice(0, 500)}\`\n\nSee the [workflow run](https://github.com/${owner}/${repo}/actions) for full logs.`,
-      });
+// Exposed for unit testing.
+export { stripOrphanImageRefs };
+
+// Only run main() when this file is the script entry point — lets tests import
+// stripOrphanImageRefs without triggering the workflow.
+const isEntryPoint = import.meta.url === `file://${process.argv[1]}`;
+if (isEntryPoint) {
+  main().catch(async (err) => {
+    console.error(err);
+    // Best-effort: post a failure comment if we have enough env to do so.
+    try {
+      const token = process.env.GITHUB_TOKEN;
+      const owner = process.env.REPO_OWNER;
+      const repo = process.env.REPO_NAME;
+      const issueNumber = Number(process.env.ISSUE_NUMBER);
+      if (token && owner && repo && issueNumber) {
+        const octokit = new Octokit({ auth: token });
+        await octokit.issues.createComment({
+          owner,
+          repo,
+          issue_number: issueNumber,
+          body: `❌ Wiki AI update failed.\n\n**Error:** \`${(err.message || String(err)).slice(0, 500)}\`\n\nSee the [workflow run](https://github.com/${owner}/${repo}/actions) for full logs.`,
+        });
+      }
+    } catch (commentErr) {
+      console.error('Also failed to post failure comment:', commentErr);
     }
-  } catch (commentErr) {
-    console.error('Also failed to post failure comment:', commentErr);
-  }
-  process.exit(1);
-});
+    process.exit(1);
+  });
+}

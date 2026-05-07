@@ -16,7 +16,7 @@ const TOOL_NAME = 'propose_wiki_changes';
 const TOOL_DEFINITION = {
   name: TOOL_NAME,
   description:
-    'Propose the markdown file creations and updates required to reflect the user-described product change in the wiki. Always return the full final content of each affected file (no diffs). For new screenshots, specify which uploaded image (by source_index) should be saved where in static/img/.',
+    'Propose the markdown file creations and updates required to reflect the user-described product change in the wiki. Always return the full final content of each affected file (no diffs). Reference uploaded screenshots by the exact pre-saved paths listed in the user message — do not invent new image paths.',
   input_schema: {
     type: 'object',
     required: ['summary', 'changes', 'pr_title', 'pr_body'],
@@ -39,7 +39,7 @@ const TOOL_DEFINITION = {
             },
             file_path: {
               type: 'string',
-              description: 'Repo-relative path, e.g. `docs/opportunity-tracker.md`.',
+              description: 'Repo-relative path under `docs/`, e.g. `docs/opportunity-tracker.md`. Must start with `docs/`.',
             },
             frontmatter: {
               type: 'object',
@@ -53,41 +53,18 @@ const TOOL_DEFINITION = {
             },
             content: {
               type: 'string',
-              description: 'Complete final markdown file content INCLUDING the frontmatter block (`---` ... `---`). Must be ready to write to disk as-is.',
-            },
-            image_placements: {
-              type: 'array',
-              description: 'Optional. Maps uploaded screenshots to image paths referenced in `content`. Each placement saves the source image to the given path; the `content` field must reference that same path.',
-              items: {
-                type: 'object',
-                required: ['source_index', 'save_to', 'alt'],
-                properties: {
-                  source_index: {
-                    type: 'integer',
-                    minimum: 0,
-                    description: 'Index into the uploaded images list (0-based, in upload order).',
-                  },
-                  save_to: {
-                    type: 'string',
-                    description: 'Repo-relative path under `static/img/`, e.g. `static/img/screenshots/feature-x/login.png`. Use kebab-case names.',
-                  },
-                  alt: {
-                    type: 'string',
-                    description: 'Alt text for accessibility, in English.',
-                  },
-                },
-              },
+              description: 'Complete final markdown file content INCLUDING the frontmatter block (`---` ... `---`). Must be ready to write to disk as-is. Any image references must use the exact pre-saved screenshot paths supplied in the user message — see the AVAILABLE SCREENSHOTS list. Do NOT reference image paths that were not supplied.',
             },
           },
         },
       },
       pr_title: {
         type: 'string',
-        description: 'Concise PR title. No emojis. No issue body content.',
+        description: 'Concise PR title in English. No emojis. No issue body content.',
       },
       pr_body: {
         type: 'string',
-        description: 'Markdown PR body. Brief — what changed and why. Reviewers will check the rendered Vercel preview.',
+        description: 'Markdown PR body. Brief — explain *why* this change matters. Do NOT repeat the file list; the calling code injects it. Use real newlines, not the literal characters `\\n`.',
       },
     },
   },
@@ -104,9 +81,9 @@ function buildSystemPrompt(contextText) {
     "- Look at the screenshots carefully. Describe what the user actually sees, not what the PM's prose says — when they conflict, the screenshots win. If the PM wrote in another language, translate the intent into English; do not echo non-English prose into the wiki.",
     '- Match the voice, terminology, and structure defined in the Product context section and demonstrated by the existing wiki pages below. Preserve unrelated sections verbatim when updating an existing page.',
     '- Prefer updating an existing page over creating a new one when the topic already has a home.',
-    '- For screenshots, pick descriptive kebab-case filenames under `static/img/screenshots/<feature-or-page>/<name>.png`. The `content` field must reference the saved path with a relative URL like `/img/screenshots/...` (Docusaurus serves `static/` at root).',
+    '- IMAGES: every uploaded screenshot has already been saved to a known path (see the AVAILABLE SCREENSHOTS list in the user message). When you reference an image in markdown, use ONLY one of those exact paths. Do NOT invent paths like `/img/screenshots/feature-x/login.png`. If a screenshot is not relevant, simply do not reference it — do not write a markdown image tag for it.',
+    '- If the PM uploaded screenshots that show something not worth documenting (a wrong screenshot, a duplicate, a placeholder), ignore them — do not invent any image references for them.',
     '- Always return the COMPLETE final file content in `content`, including the frontmatter block delimited by `---`. Do not return diffs or partial files.',
-    "- For `pr_body`, write a short markdown summary of *why* this change matters. Do NOT repeat the file list — the calling code injects that. Use real newlines, not the literal characters `\\n`.",
     '- Be conservative: minimal, focused changes. Do not refactor unrelated parts of the wiki.',
     '',
     contextText,
@@ -115,6 +92,12 @@ function buildSystemPrompt(contextText) {
 
 function buildUserContent({ description, images, issue }) {
   const blocks = [];
+
+  const screenshotList = images.length > 0
+    ? images
+        .map((img) => `  - Screenshot ${img.index}: \`${img.urlPath}\``)
+        .join('\n')
+    : '  (none)';
 
   blocks.push({
     type: 'text',
@@ -125,8 +108,11 @@ function buildUserContent({ description, images, issue }) {
       "PM's description (may be in any language — translate the intent into English when writing wiki content):",
       description || '(empty — rely on the screenshots)',
       '',
+      `AVAILABLE SCREENSHOTS (${images.length} uploaded, already saved on disk):`,
+      screenshotList,
+      '',
       images.length > 0
-        ? `${images.length} screenshot(s) follow, in upload order. Use 0-based indices when referencing them in image_placements.`
+        ? 'When referencing any of these in markdown, use the exact `/img/...` path shown above. Do not invent other paths. The screenshot images themselves follow in upload order.'
         : 'No screenshots were attached.',
     ].join('\n'),
   });
