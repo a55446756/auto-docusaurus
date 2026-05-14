@@ -14,7 +14,12 @@ const config: Config = {
   projectName: 'fios-website',
 
   onBrokenLinks: 'throw',
-  onBrokenMarkdownLinks: 'warn',
+  markdown: {
+    hooks: {
+      onBrokenMarkdownLinks: 'warn',
+      onBrokenMarkdownImages: 'warn',
+    },
+  },
 
   i18n: {
     defaultLocale: 'en',

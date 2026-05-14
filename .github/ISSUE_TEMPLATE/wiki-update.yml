@@ -1,39 +1,40 @@
-name: Wiki update (AI 自动写)
-description: 描述你想更新的内容、贴上截图，剩下交给 AI。
+name: Wiki update (AI-drafted)
+description: Describe what changed and drop in a few screenshots. The AI will write the wiki update.
 title: "[Wiki] "
 labels: ["wiki-update"]
 body:
   - type: markdown
     attributes:
       value: |
-        ### 怎么用
+        ### How this works
 
-        1. 在下面"这次更新讲了什么？"里 **直接粘贴或拖拽截图**（GitHub 会自动上传）。
-        2. 用大白话写一段说明：发生了什么变化、用户在哪里能看到。
-        3. 选择本次更新影响的 wiki 区域。
-        4. 提交 issue。AI 会自动生成 wiki 改动的 PR，几分钟内会在本 issue 下回复链接。
+        1. In the box below, **paste or drag in screenshots** (GitHub uploads them automatically).
+        2. Write a few sentences in plain English: what changed, where the user sees it.
+        3. Pick which wiki area(s) the change affects.
+        4. Submit. The AI will open a PR with the wiki edits within a couple of minutes and reply here with the link.
 
-        > 不需要懂 markdown 或 git。截图 + 大白话就够了。
+        > You don't need to know markdown or git. Screenshots plus a plain-English description are enough.
 
   - type: textarea
     id: description
     attributes:
-      label: 这次更新讲了什么？
-      description: 把截图直接拖拽或粘贴到这个框里，并用文字说明发生了什么变化。
+      label: What's changing in this update?
+      description: Paste or drag screenshots into this box, and describe in plain English what changed.
       placeholder: |
-        示例：
-        我们在 Opportunity Tracker 里加了一个"AI 摘要"按钮。点了之后右侧会展开一个面板，
-        里面是 AI 自动生成的摘要 + 关键日期 + 是否符合资质要求。
+        Example:
+        We added a "Generate AI Summary" button at the top of the Opportunity Tracker.
+        Clicking it opens a panel on the right with the AI summary, key dates, and a
+        clearance-match assessment for that opportunity.
 
-        （在这里贴上 1-3 张截图，比如点击前后的对比、新面板的样子）
+        (Drop in 1–3 screenshots — e.g. before/after, or the new panel.)
     validations:
       required: true
 
   - type: dropdown
     id: areas
     attributes:
-      label: 影响 wiki 哪些区域？
-      description: 选择本次更新涉及到的 wiki 模块（可多选）。AI 会优先重点改这些页面。
+      label: Which wiki areas does this affect?
+      description: Pick the wiki module(s) this change touches (multi-select). The AI will focus its edits on these pages.
       multiple: true
       options:
         - intro
@@ -44,6 +45,6 @@ body:
     validations:
       required: true
 
-  # NOTE: dropdown options are static. If wiki structure changes (新增/删除一级目录),
-  # 需要同步更新这里。后续可改成在 workflow 里动态读 docs/ 目录后再渲染表单
-  # （目前 GitHub Issue Forms 不支持动态选项，所以保持 static 列表 + 维护说明）。
+  # NOTE: dropdown options are static. If the wiki structure changes (new/removed
+  # top-level docs), update this list. GitHub Issue Forms don't support dynamic
+  # options, so this stays static + maintained by hand.
