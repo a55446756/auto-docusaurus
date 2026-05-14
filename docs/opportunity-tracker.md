@@ -59,6 +59,36 @@ The Opportunity tracker by default only displays open opportunities. Uncheck *Hi
 
 Yes! Use the **Add** button on the top right of the table to manually add opportunities from undefined sources.
 
+### How to bulk import opportunities via CSV {#bulk-import}
+
+If you have a list of opportunities in a spreadsheet, you can import them all at once rather than adding them one by one.
+
+1. Select **Bulk import** at the top right of the table (next to the **Add** button).
+2. In the modal that appears, drag and drop your `.csv` file onto the upload area, or select **Browse** to locate the file on your device.
+3. FiOS will display a preview table and attempt to auto-match your file's column headers to the expected fields. Review the column mappings and adjust any that weren't matched correctly.
+4. Select **Confirm import** to proceed.
+
+Once the import completes, a summary notification will confirm how many opportunities were imported and how many rows were skipped.
+
+:::note
+Imported opportunities are assigned the status **Pending Review** and follow the normal triage flow from there.
+:::
+
+#### Required and optional columns
+
+| Column | Required? |
+|---|---|
+| Title | Required |
+| Source | Required |
+| Closing Date | Required |
+| Location | Optional |
+| Clearance | Optional |
+| Notes | Optional |
+
+#### Handling rows with missing required fields
+
+Any row that is missing a required field is flagged in red in the preview table and will be skipped during import. The summary notification at the end of the import will tell you how many rows were skipped so you can correct and re-import them.
+
 ## Opportunity Status
 
 ### Pre-submission status
